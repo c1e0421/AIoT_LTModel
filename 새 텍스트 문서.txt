@@ -1,0 +1,179 @@
+import cv2
+import numpy as np
+import time
+from matplotlib import pyplot as plt
+from pop import Util,Pilot
+
+
+
+
+Car=Pilot.AutoCar()
+Car.camPan(98)
+Car.camTilt(-15)
+Util.enable_imshow()
+
+cam = Util.gstrmer(width=640,height=480)
+cap =cv2.VideoCapture(cam,cv2.CAP_GSTREAMER)
+camera_matrix_file="intrinsic_parameters/camera_matrix.npy"
+dist_coeffs_file = "intrinsic_parameters/distortion_coefficients.npy"
+
+
+
+camera_matrix=np.load(camera_matrix_file)
+dist_coeffs=np.load(dist_coeffs_file)
+
+
+#most fur
+w1= 2.5
+w2= 1.0
+w3= 0.5
+Kp=0.7
+Ki=0 
+Kd=0
+
+
+
+def Get_range_value(value):
+    if(value>1):return 1
+    elif(value<-1):return -1
+    return value
+
+def Get_error(img, cam_cx , cam_cy , contour_cx , contour_cy ):
+    #height = 480 - contour_cy 
+    error = ( ( contour_cx - cam_cx   ) / 320 )
+    cv2.putText(img, str("%.2f"%error) , (cam_cx,cam_cy),  cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3 )
+                
+    return error
+def Preprocesing( img ):
+
+    # PreProcessing----------------------------------------------------------
+    
+    # HSV image 
+    img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV) 
+    
+    # Normalization
+    #img_hsv[:,:,1]  = cv2.normalize(img_hsv[:,:,1],None, 0, 255, cv2.NORM_MINMAX)
+    #img_hsv[:,:,2]  = cv2.normalize(img_hsv[:,:,2],None, 0, 255, cv2.NORM_MINMAX)
+    
+    # bitwise 
+    lower_green = (85, 40 , 40)
+    upper_green =  (130, 255, 255)
+    img_mask = cv2.inRange( img_hsv  , lower_green, upper_green)
+    
+    # blur
+    
+    # erode + dilat
+    #cv2.imshow('img',img_mask)
+    
+    '''
+    kernel = np.ones((9,9) , np.uint8)
+    openin_img = cv2.morphologyEx(img_mask, cv2.MORPH_OPEN, kernel)
+    '''
+    
+    kernel = np.ones((8,8) , np.uint8)
+    img_erode  = cv2.erode(img_mask, kernel)
+    kernel = np.ones((11,11) , np.uint8)
+    img_dilat = cv2.dilate(img_erode, kernel)
+    
+    
+    
+    
+    return img_dilat
+    
+    
+    
+#-------------------------------------------------------------------------#
+
+
+    
+def Get_center(img,processed_img,height_range:tuple , width_range = (320 - 320 , 320 + 320) , min_contour_area = 100 ):
+
+    # get cam center
+    cam_cx,cam_cy = int ((width_range[0] + width_range[1]) / 2) , int ((height_range[0] + height_range[1]) / 2)
+    
+    # Crops image
+    crop_img  = img[height_range[0]:height_range[1],width_range[0]:width_range[1]]
+    corp_processed_img = processed_img[height_range[0]:height_range[1],width_range[0]:width_range[1]]
+    
+    # Get conotur
+    contours , hierarchy = cv2.findContours(corp_processed_img , cv2.RETR_TREE , cv2.CHAIN_APPROX_SIMPLE)
+    # IF NO contour 
+    if(len(contours) == 0 ) :  return cam_cx, cam_cy ,  cam_cx , cam_cy , False
+    # Get approx contour
+    c = max(contours , key = cv2.contourArea)
+    peri = cv2.arcLength(c, True)
+    approx = np.array( cv2.approxPolyDP(c, peri * 0.005 , True) )
+    M = cv2.moments(approx)
+    # IF TOO small contour area 
+    if( M['m00'] < min_contour_area ): return cam_cx, cam_cy ,  cam_cx , cam_cy , False
+    
+
+    
+    
+    
+    # get center
+    cx = int(M['m10']/M['m00']) + width_range[0] 
+    cy = int(M['m01']/M['m00']) + height_range[0]
+
+    # draw
+    cv2.drawContours(crop_img, [approx] , -1, (255,0,0), 3)
+    cv2.circle(img, (cx,cy), 1,(255,0,0) ,5)
+    cv2.circle(img, (cam_cx,cam_cy), 1,(0,0,255) ,5)
+    
+    
+    return cam_cx, cam_cy , cx , cy , True
+
+
+
+
+#-------------------------------------------------------------------------#
+prior_error =0; I =0
+def Get_pid_value(error, Kp , Ki , Kd):  
+    global prior_error, I
+    P = error 
+    I = I+error 
+    D = error - prior_error
+    
+    pid_value = Get_range_value ( P*Kp + I*Ki + D*Kd )
+    prior_error = error
+    
+    
+    
+    
+    return pid_value
+    
+#-------------------------------------------------------------------------#
+
+Car.forward(99)
+
+frame = 0 ; pid_value = 0
+while True:
+    
+    ret, img =cap.read() ; img=cv2.undistort(img,camera_matrix,dist_coeffs)
+    preprosed_img = Preprocesing( img )
+    frame += 1 ; check = 0 ;  error = 0 
+    
+
+
+    cam_cx1 , cam_cy1 , contour_cx1 , contour_cy1 , check1 = Get_center(img ,preprosed_img,height_range = (80,180))
+    cam_cx2 , cam_cy2 , contour_cx2 , contour_cy2 , check2 = Get_center(img ,preprosed_img,height_range = (180,280))
+    cam_cx3 , cam_cy3 , contour_cx3 , contour_cy3 , check3 = Get_center(img ,preprosed_img,height_range = (280,380))
+    
+   
+    if(check1) : error = error + Get_error(img,cam_cx1 , cam_cy1 , contour_cx1 , contour_cy1 )  *w1  ; check += 1 
+    if(check2) : error = error + Get_error(img,cam_cx2 , cam_cy2 , contour_cx2 , contour_cy2 )  *w2  ; check += 1
+    if(check3) : error = error + Get_error(img,cam_cx3 , cam_cy3 , contour_cx3 , contour_cy3 )  *w3  ; check += 1
+    
+                
+                
+    if(frame % 5 == 0):
+        if(check > 0) : 
+            pid_value = Get_pid_value(error/check,Kp , Ki , Kd)
+            Car.steering=pid_value
+                #cap.release()
+                #cap =cv2.VideoCapture(cam,cv2.CAP_GSTREAMER)
+            #Car.setSpeed(check*30)
+        cv2.putText(img, str("PID : %.2f"%pid_value) , (30,30),  cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3 )
+
+        cv2.imshow('img',img)
+        
